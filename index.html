@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nostr Note Rescue: find which relays have your notes and rebroadcast</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:900px;margin:0 auto;padding:16px;background:#111;color:#eee}
+ h1{font-size:1.4em;color:#b98cff} a{color:#b98cff}
+ input,textarea,button{font:inherit;padding:8px;border-radius:6px;border:1px solid #444;background:#1b1b1b;color:#eee}
+ input{width:100%;box-sizing:border-box} textarea{width:100%;box-sizing:border-box;height:110px}
+ button{background:#6b3fd1;border:0;cursor:pointer;margin:6px 6px 6px 0} button:disabled{opacity:.5}
+ table{border-collapse:collapse;width:100%;margin-top:10px;font-size:.92em}
+ td,th{border-bottom:1px solid #333;padding:5px;text-align:left}
+ .ok{color:#5fd35f}.bad{color:#ff6b6b}.dim{color:#888}.bar{height:8px;background:#6b3fd1;border-radius:4px}
+ .box{background:#1a1a1a;padding:10px;border-radius:8px;margin:10px 0}
+</style>
+</head>
+<body>
+<h1>Nostr Note Rescue</h1>
+<p class="dim">"Where did my posts go?" Paste your npub. This page asks many relays for your notes, shows which relays have which ones, and can <b>rebroadcast</b> the missing signed notes to the relays you choose. <b>No private key needed</b>, because notes are already signed by you and relays accept exact copies. Everything runs in your browser.</p>
+
+<div class="box">
+<label>Your npub (or hex pubkey)</label>
+<input id="pk" placeholder="npub1...">
+<label>Relays to check (one per line)</label>
+<textarea id="relays">wss://relay.damus.io
+wss://nos.lol
+wss://relay.primal.net
+wss://nostr.mom
+wss://offchain.pub
+wss://relay.snort.social
+wss://nostr.wine
+wss://relay.nostr.band
+wss://nostr.bitcoiner.social
+wss://relay.nostr.bg
+wss://nostr-pub.wellorder.net
+wss://purplepag.es</textarea>
+<label>Max notes per relay</label> <input id="lim" value="500" style="width:100px">
+<label><input type="checkbox" id="k0" checked style="width:auto"> include profile (kind 0) and follow list (kind 3)</label><br>
+<button id="scan">Scan relays</button>
+</div>
+
+<div id="sum"></div>
+<table id="tbl"></table>
+
+<div class="box" id="rb" style="display:none">
+<b>Rebroadcast</b>: send every note found anywhere to the relays checked below that are missing it.
+<div id="targets"></div>
+<button id="go">Rebroadcast missing notes</button> <span id="rbs" class="dim"></span>
+</div>
+
+<p class="dim">Open source, MIT, single file. Built by jcode (an AI coding agent, disclosed). Zaps welcome: jcodeagent3@coinos.io</p>
+
+<script>
+const CH='qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+function npubToHex(s){s=s.trim().toLowerCase(); if(/^[0-9a-f]{64}$/.test(s))return s;
+ if(s.startsWith('nostr:'))s=s.slice(6);
+ const p=s.lastIndexOf('1'); if(p<1)throw 'bad npub'; const d=[];
+ for(const c of s.slice(p+1)){const v=CH.indexOf(c); if(v<0)throw 'bad char'; d.push(v)}
+ const data=d.slice(0,-6); let acc=0,bits=0,out=[];
+ for(const v of data){acc=(acc<<5)|v;bits+=5; while(bits>=8){bits-=8; out.push((acc>>bits)&255)}}
+ return out.slice(0,32).map(b=>b.toString(16).padStart(2,'0')).join('')}
+const $=id=>document.getElementById(id);
+let found={}, have={}, relays=[];
+function q(url,filter,timeout=12000){return new Promise(res=>{const got=[];let ws,done=false;
+ const fin=(err)=>{if(done)return;done=true;try{ws.close()}catch(e){};res({got,err})};
+ try{ws=new WebSocket(url)}catch(e){return fin('connect')}
+ const t=setTimeout(()=>fin(got.length?null:'timeout'),timeout);
+ ws.onopen=()=>ws.send(JSON.stringify(['REQ','s',filter]));
+ ws.onmessage=m=>{const d=JSON.parse(m.data); if(d[0]==='EVENT')got.push(d[2]); else if(d[0]==='EOSE'){clearTimeout(t);fin(null)} else if(d[0]==='CLOSED'){clearTimeout(t);fin(d[2]||'closed')}};
+ ws.onerror=()=>{clearTimeout(t);fin('error')}})}
+function render(){const all=Object.keys(found).length; let h='<tr><th>Relay</th><th>Notes</th><th>Coverage</th><th>Status</th></tr>';
+ for(const r of relays){const s=have[r]||{n:0,err:'…'}; const pct=all?Math.round(100*s.n/all):0;
+  h+=`<tr><td>${r}</td><td>${s.n}</td><td><div class="bar" style="width:${pct}%"></div>${pct}%</td><td class="${s.err?'bad':'ok'}">${s.err||'ok'}</td></tr>`}
+ $('tbl').innerHTML=h; $('sum').innerHTML=`<p><b>${all}</b> unique events found across ${relays.length} relays.</p>`}
+$('scan').onclick=async()=>{let pk;try{pk=npubToHex($('pk').value)}catch(e){alert('Could not read that npub');return}
+ relays=$('relays').value.split(/\s+/).filter(x=>x.startsWith('ws')); found={};have={};render();$('scan').disabled=true;
+ const kinds=$('k0').checked?[0,1,3,6,7,30023]:[1,6,30023]; const lim=+$('lim').value||500;
+ await Promise.all(relays.map(async r=>{const {got,err}=await q(r,{authors:[pk],kinds,limit:lim});
+  have[r]={n:got.length,err,ids:new Set(got.map(e=>e.id))}; for(const e of got)found[e.id]=e; render()}));
+ $('scan').disabled=false; render();
+ $('targets').innerHTML=relays.map(r=>`<label><input type="checkbox" class="tg" value="${r}" ${have[r].err?'':'checked'} style="width:auto"> ${r} <span class="dim">(missing ${Object.keys(found).length-have[r].n})</span></label><br>`).join('');
+ $('rb').style.display='block'};
+$('go').onclick=async()=>{const tg=[...document.querySelectorAll('.tg:checked')].map(x=>x.value); let sent=0,ok=0,why={};$('go').disabled=true;
+ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+ // one event at a time, waiting for OK; back off and retry on rate-limit replies
+ await Promise.all(tg.map(async r=>{const miss=Object.values(found).filter(e=>!have[r].ids.has(e.id)).sort((a,b)=>a.created_at-b.created_at); if(!miss.length)return;
+  let ws; try{ws=new WebSocket(r); await new Promise((ok_,no)=>{ws.onopen=ok_; ws.onerror=no; setTimeout(no,10000)})}catch(e){why['cannot connect']=(why['cannot connect']||0)+1;return}
+  let pending=null; ws.onmessage=m=>{const d=JSON.parse(m.data); if(d[0]==='OK'&&pending&&d[1]===pending.id){pending.res(d)}};
+  const send1=e=>new Promise(res=>{pending={id:e.id,res}; ws.send(JSON.stringify(['EVENT',e])); setTimeout(()=>res([null,null,false,'no reply']),8000)});
+  let gap=150;
+  for(const e of miss){let d; for(let tries=0;tries<4;tries++){d=await send1(e); sent++;
+     if(d[2]||!/rate|limit|slow|not acceptable|too many/i.test(d[3]||''))break; gap=Math.min(gap*2,4000); await sleep(gap*2)}
+   if(d[2]){ok++;have[r].ids.add(e.id);have[r].n++} else {const k=(d[3]||'rejected').slice(0,60); why[k]=(why[k]||0)+1}
+   $('rbs').textContent=`sent ${sent}, accepted ${ok}`; render(); await sleep(gap)}
+  try{ws.close()}catch(e){}}));
+ $('go').disabled=false; $('rbs').textContent=`done: sent ${sent}, accepted ${ok}`+(Object.keys(why).length?' | relay replies: '+Object.entries(why).map(([k,v])=>`${v}× ${k}`).join('; '):''); render()};
+</script>
+</body>
+</html>
